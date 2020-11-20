@@ -923,10 +923,9 @@ void EMMI::doMonteCarlo()
   if(new_s > sigma_max_[nGMM]) {new_s = 2.0 * sigma_max_[nGMM] - new_s;}
   if(new_s < sigma_min_[nGMM]) {new_s = 2.0 * sigma_min_[nGMM] - new_s;}
   // old s2
-  // EMMI-BIAS: sigma_SEM here
-  double old_inv_s2 = 1.0 / sigma_[nGMM] / sigma_[nGMM];
+  double old_inv_s2 = 1.0 / (sigma_[nGMM] * sigma_[nGMM] + scale_ * sigma_mean2_[nGMM]);
   // new s2
-  double new_inv_s2 = 1.0 / new_s / new_s;
+  double new_inv_s2 = 1.0 / (new_s * new_s + scale_ * sigma_mean2_[nGMM]);
 
   // cycle on GMM group and calculate old and new energy
   double old_ene = 0.0;
