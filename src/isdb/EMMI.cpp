@@ -238,6 +238,8 @@ private:
   double decay_w_;
   vector<double> average_weights_;
 
+  bool do_output_overlap_;
+
 // write file with model overlap
   void write_model_overlap(long int step);
 // get median of vector
@@ -453,6 +455,7 @@ void EMMI::registerKeywords( Keywords& keys ) {
   keys.addFlag("NO_AVER",false,"don't do ensemble averaging in multi-replica mode");
   keys.addFlag("REWEIGHT",false,"simple REWEIGHT using the ARG as energy");
   keys.addFlag("OPTSIGMAMEAN",false,"Set to manually set sigma mean, or to estimate it on the fly");
+  keys.addFlag("OUTPUT_OVERLAP",false,"Set to output the total overlaps ov_MD and ov_DD");
   componentsAreNotOptional(keys);
   keys.addOutputComponent("scoreb","default","Bayesian score");
   keys.addOutputComponent("acc",   "NOISETYPE","MC acceptance for uncertainty");
@@ -463,6 +466,8 @@ void EMMI::registerKeywords( Keywords& keys ) {
   keys.addOutputComponent("weight",       "REWEIGHT",     "weights of the weighted average");
   keys.addOutputComponent("biasDer",      "REWEIGHT",     "derivatives with respect to the bias");
   keys.addOutputComponent("sigmaMean",      "OPTSIGMAMEAN",     "uncertainty in the mean estimate");
+  keys.addOutputComponent("ovmd",      "OUTPUT_OVERLAP",     "Total forward model overlap");
+  keys.addOutputComponent("ovdd",      "OUTPUT_OVERLAP",     "Total experimental overlap");
 }
 
 EMMI::EMMI(const ActionOptions&ao):
@@ -478,7 +483,9 @@ EMMI::EMMI(const ActionOptions&ao):
   nregres_(0), scale_(1.),
   dpcutoff_(15.0), nexp_(1000000), nanneal_(0),
   kanneal_(0.), anneal_(1.), prior_(1.), ovstride_(0),
-  do_reweight_(false), decay_w_(1.), do_optsigmamean_(false), optsigmamean_stride_(0)
+  do_reweight_(false), decay_w_(1.),
+  do_optsigmamean_(false), optsigmamean_stride_(0),
+  do_output_overlap_(false)
 {
   // periodic boundary conditions
   bool nopbc=!pbc_;
@@ -626,6 +633,8 @@ EMMI::EMMI(const ActionOptions&ao):
   parse("SIGMA_MEAN0",read_sigma_mean_);
   if(do_optsigmamean_ && read_sigma_mean_ < 0 && !getRestart())
     error("If you use OPTSIGMAMEAN and you are not RESTARTING then you MUST SET SIGMA_MEAN0");
+
+  parseFlag("OUTPUT_OVERLAP", do_output_overlap_);
 
 
   checkRead();
@@ -786,6 +795,11 @@ EMMI::EMMI(const ActionOptions&ao):
       addComponent("sigmaMean-"+num); componentIsNotPeriodic("sigmaMean-"+num);
       getPntrToComponent("sigmaMean-"+num)->set(sqrt(sigma_mean2_[i]));
     }
+  }
+
+  if(do_output_overlap_) {
+    addComponent("ovmd"); componentIsNotPeriodic("ovmd");
+    addComponent("ovdd"); componentIsNotPeriodic("ovdd");
   }
 
   if(nanneal_>0) {addComponent("anneal"); componentIsNotPeriodic("anneal");}
@@ -1761,6 +1775,17 @@ void EMMI::calculate()
     }
     setArgDerivatives(getPntrToComponent("scoreb"), w_tmp);
     getPntrToComponent("biasDer")->set(w_tmp);
+  }
+
+  if(do_output_overlap_) {
+    double ovdd_total = 0.;
+    double ovmd_total = 0.;
+    for(unsigned i=0; i<ovdd_.size(); i++) {
+      ovdd_total += ovdd_[i];
+      ovmd_total += ovmd_[i];
+    }
+    getPntrToComponent("ovdd")->set(ovdd_total);
+    getPntrToComponent("ovmd")->set(ovmd_total);
   }
 
   // This part is needed only for Gaussian and Outliers noise models
