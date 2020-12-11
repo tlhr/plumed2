@@ -466,6 +466,7 @@ void EMMI::registerKeywords( Keywords& keys ) {
   keys.addOutputComponent("weight",       "REWEIGHT",     "weights of the weighted average");
   keys.addOutputComponent("biasDer",      "REWEIGHT",     "derivatives with respect to the bias");
   keys.addOutputComponent("sigmaMean",      "OPTSIGMAMEAN",     "uncertainty in the mean estimate");
+  keys.addOutputComponent("sigma",      "NOISETYPE",     "uncertainty in the forward models and experiment");
   keys.addOutputComponent("ovmd",      "OUTPUT_OVERLAP",     "Total forward model overlap");
   keys.addOutputComponent("ovdd",      "OUTPUT_OVERLAP",     "Total experimental overlap");
 }
@@ -802,6 +803,12 @@ EMMI::EMMI(const ActionOptions&ao):
     addComponent("ovdd"); componentIsNotPeriodic("ovdd");
   }
 
+  for(unsigned i=0; i<sigma_.size(); ++i) {
+    string num; Tools::convert(i, num);
+    addComponent("sigma-"+num); componentIsNotPeriodic("sigma-"+num);
+    getPntrToComponent("sigma-"+num)->set(sigma_[i]);
+  }
+
   if(nanneal_>0) {addComponent("anneal"); componentIsNotPeriodic("anneal");}
 
   // initialize random seed
@@ -996,6 +1003,9 @@ void EMMI::doMonteCarlo()
     comm.Sum(&sigma_[0], sigma_.size());
     comm.Sum(&MCaccept_, 1);
   }
+  // update sigma output
+  string num; Tools::convert(nGMM, num);
+  getPntrToComponent("sigma-"+num)->set(sigma_[nGMM]);
 }
 
 vector<double> EMMI::read_exp_errors(string errfile)
