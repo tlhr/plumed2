@@ -1638,6 +1638,16 @@ void EMMI::get_sigma_mean(const double fact, const double var_fact, const vector
       }
       comm.Sum(&sigma_mean2_now[0], GMM_d_grps_.size());
       for(unsigned i=0; i<GMM_d_grps_.size(); ++i) sigma_mean2_now[i] = dnrep/(dnrep-1.)*(sigma_mean2_now[i] + mean[i]*mean[i]*var_fact);
+    } else {
+      if(rank_==0) {
+        for(unsigned i=0; i<GMM_d_grps_.size(); ++i) {
+          double tmp = mult[i] - ave_fact * mean[i];
+          sigma_mean2_now[i] = tmp * tmp;
+        }
+        if(nrep_>1) multi_sim_comm.Sum(&sigma_mean2_now[0], GMM_d_grps_.size());
+      }
+      comm.Sum(&sigma_mean2_now[0], GMM_d_grps_.size());
+      for(unsigned i=0; i<GMM_d_grps_.size(); ++i) sigma_mean2_now[i] /= dnrep;
     }
 
     // add sigma_mean2 to history
