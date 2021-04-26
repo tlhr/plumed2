@@ -207,6 +207,13 @@ private:
   double decay_w_;
   std::vector<double> average_weights_;
 
+  // sigma_mean is uncertainty in the mean estimate
+  bool do_optsigmamean_;
+  std::vector<double> sigma_mean2_;
+  // optimize sigma mean
+  std::vector < std::vector <double> > sigma_mean2_last_;
+  unsigned optsigmamean_stride_;
+
 // write file with model overlap
   void write_model_overlap(long int step);
 // get median of std::vector
@@ -260,6 +267,7 @@ private:
 
   // See MetainferenceBase
   void get_weights(double &weight, double &norm, double &neff);
+  void get_sigma_mean(const double weight, const double norm, const double neff, const std::vector<double> &mean);
 
 public:
   static void registerKeywords( Keywords& keys );
@@ -417,6 +425,8 @@ void EMMI::registerKeywords( Keywords& keys ) {
   keys.add("optional","WRITE_OV_STRIDE","write model overlaps every N steps");
   keys.add("optional","WRITE_OV","write a file with model overlaps");
   keys.add("optional","AVERAGING", "Averaging window for weights");
+  keys.add("optional","SIGMA_MEAN0","starting value for the uncertainty in the mean estimate");
+  keys.addFlag("OPTSIGMAMEAN",false,"Set to estimate sigma_mean on the fly");
   keys.addFlag("NO_AVER",false,"don't do ensemble averaging in multi-replica mode");
   keys.addFlag("REWEIGHT",false,"simple REWEIGHT using the ARG as energy");
   componentsAreNotOptional(keys);
@@ -430,6 +440,7 @@ void EMMI::registerKeywords( Keywords& keys ) {
   keys.addOutputComponent("biasDer",      "REWEIGHT",     "derivatives with respect to the bias");
   keys.addOutputComponent("sigma",      "NOISETYPE",     "uncertainty in the forward models and experiment");
   keys.addOutputComponent("neff",         "default",      "effective number of replicas");
+  keys.addOutputComponent("sigmaMean",    "OPTSIGMAMEAN",      "uncertainty in the mean estimate");
 }
 
 EMMI::EMMI(const ActionOptions&ao):
@@ -445,7 +456,8 @@ EMMI::EMMI(const ActionOptions&ao):
   nregres_(0), scale_(1.),
   dpcutoff_(15.0), nexp_(1000000), nanneal_(0),
   kanneal_(0.), anneal_(1.), prior_(1.), ovstride_(0),
-  do_reweight_(false), first_time_w_(true), decay_w_(1.)
+  do_reweight_(false), first_time_w_(true), decay_w_(1.),
+  do_optsigmamean_(false), optsigmamean_stride_(0)
 {
   // periodic boundary conditions
   bool nopbc=!pbc_;
@@ -584,7 +596,14 @@ EMMI::EMMI(const ActionOptions&ao):
   parse("AVERAGING", averaging);
   if(averaging>0) {
     decay_w_ = 1./static_cast<double> (averaging);
+    optsigmamean_stride_ = averaging;
   }
+
+  parseFlag("OPTSIGMAMEAN", do_optsigmamean_);
+  double read_sigma_mean_;
+  parse("SIGMA_MEAN0",read_sigma_mean_);
+  if(do_optsigmamean_ && read_sigma_mean_ <= 0.0 && !getRestart())
+    error("If you use OPTSIGMAMEAN and you are not RESTARTING then you MUST SET SIGMA_MEAN0");
 
   checkRead();
 
@@ -693,6 +712,20 @@ EMMI::EMMI(const ActionOptions&ao):
     }
   }
 
+  // Optsigmamean
+  if (read_sigma_mean_ > 0.0) {
+    sigma_mean2_.resize(GMM_d_grps_.size());
+    for (unsigned i = 0; i < GMM_d_grps_.size(); i++)
+      sigma_mean2_[i] = read_sigma_mean_ * read_sigma_mean_;
+  } else {
+    sigma_mean2_.resize(GMM_d_grps_.size(), 0.0);
+  }
+
+  // resize std::vector for sigma_mean history
+  sigma_mean2_last_.resize(GMM_d_grps_.size());
+  // set the initial value for the history
+  for(unsigned j=0; j<GMM_d_grps_.size(); j++) sigma_mean2_last_[j].push_back(sigma_mean2_[j]);
+
   // read status file if restarting
   if(getRestart() && noise_!=2) read_status();
 
@@ -726,6 +759,14 @@ EMMI::EMMI(const ActionOptions&ao):
     componentIsNotPeriodic("biasDer");
     addComponent("weight");
     componentIsNotPeriodic("weight");
+  }
+
+  if (do_optsigmamean_) {
+    for (unsigned i = 0; i < sigma_mean2_.size(); ++i) {
+      std::string num; Tools::convert(i, num);
+      addComponent("sigmaMean-" + num); componentIsNotPeriodic("sigmaMean-" + num);
+      getPntrToComponent("sigmaMean-" + num)->set(sigma_mean2_[i]);
+    }
   }
 
   addComponent("neff");
@@ -1537,6 +1578,46 @@ void EMMI::get_weights(double &weight, double &norm, double &neff)
   getPntrToComponent("neff")->set(neff);
 }
 
+void EMMI::get_sigma_mean(const double weight, const double norm, const double neff, const std::vector<double> &mean)
+{
+  const double dnrep    = static_cast<double>(nrep_);
+  std::vector<double> sigma_mean2_tmp(sigma_mean2_.size());
+
+  if(do_optsigmamean_) {
+    // remove first entry of the history std::vector
+    if(sigma_mean2_last_[0].size()==optsigmamean_stride_&&optsigmamean_stride_>0)
+      for(unsigned i=0; i<GMM_d_grps_.size(); ++i) sigma_mean2_last_[i].erase(sigma_mean2_last_[i].begin());
+    /* this is the current estimate of sigma mean for each argument
+       there is one of this per argument in any case  because it is
+       the maximum among these to be used in case of GAUSS/OUTLIER */
+    std::vector<double> sigma_mean2_now(GMM_d_grps_.size(),0);
+    if(rank_==0) {
+      for(unsigned i=0; i<GMM_d_grps_.size(); ++i) sigma_mean2_now[i] = weight*(ovmd_[i]-mean[i])*(ovmd_[i]-mean[i]);
+      if(nrep_>1) multi_sim_comm.Sum(&sigma_mean2_now[0], GMM_d_grps_.size());
+    }
+    comm.Sum(&sigma_mean2_now[0], GMM_d_grps_.size());
+    for(unsigned i=0; i<GMM_d_grps_.size(); ++i) sigma_mean2_now[i] *= 1.0/(neff-1.)/norm;
+
+    // add sigma_mean2 to history
+    if(optsigmamean_stride_>0) {
+      for(unsigned i=0; i<GMM_d_grps_.size(); ++i) sigma_mean2_last_[i].push_back(sigma_mean2_now[i]);
+    } else {
+      for(unsigned i=0; i<GMM_d_grps_.size(); ++i) if(sigma_mean2_now[i] > sigma_mean2_last_[i][0]) sigma_mean2_last_[i][0] = sigma_mean2_now[i];
+    }
+
+    for(unsigned i=0; i<GMM_d_grps_.size(); ++i) {
+      /* set to the maximum in history std::vector */
+      sigma_mean2_tmp[i] = *max_element(sigma_mean2_last_[i].begin(), sigma_mean2_last_[i].end());
+      /* the standard error of the mean */
+      std::string num; Tools::convert(i, num);
+      getPntrToComponent("sigmaMean-" + num)->set(std::sqrt(sigma_mean2_tmp[i]));
+    }
+    // endif sigma mean optimization
+  } 
+
+  sigma_mean2_ = sigma_mean2_tmp;
+}
+
 void EMMI::calculate()
 {
 
@@ -1573,6 +1654,8 @@ void EMMI::calculate()
     // set scale component
     getPntrToComponent("scale")->set(scale_);
   }
+
+  get_sigma_mean(weight, norm, neff, ovmd_ave_);
 
   // write model overlap to file
   if(ovstride_>0 && step%ovstride_==0) write_model_overlap(step);
@@ -1694,11 +1777,12 @@ void EMMI::calculate_Gauss()
       // id of the GMM component
       int GMMid = GMM_d_grps_[i][j];
       // calculate deviation
-      double dev = ( scale_*ovmd_ave_[GMMid]-ovdd_[GMMid] ) / sigma_[i];
+      double dev = ( scale_*ovmd_ave_[GMMid]-ovdd_[GMMid] );
+      const double sigma_tmp = (sigma_[i] * sigma_[i] + scale_ * sigma_mean2_[i]);
       // add to group energy
-      eneg += 0.5 * dev * dev;
+      eneg += 0.5 * dev * dev / sigma_tmp;
       // store derivative for later
-      GMMid_der_[GMMid] = kbt_ * dev / sigma_[i];
+      GMMid_der_[GMMid] = kbt_ * dev / std::sqrt(sigma_tmp);
     }
     // add to total energy along with normalizations and prior
     ene_ += kbt_ * ( eneg + (static_cast<double>(GMM_d_grps_[i].size())+prior_) * std::log(sigma_[i]) );
@@ -1715,11 +1799,12 @@ void EMMI::calculate_Outliers()
       // id of the GMM component
       int GMMid = GMM_d_grps_[i][j];
       // calculate deviation
-      double dev = ( scale_*ovmd_ave_[GMMid]-ovdd_[GMMid] ) / sigma_[i];
+      double dev = ( scale_*ovmd_ave_[GMMid]-ovdd_[GMMid] );
+      const double sigma_tmp = (sigma_[i] * sigma_[i] + scale_ * sigma_mean2_[i]);
       // add to group energy
-      eneg += std::log( 1.0 + 0.5 * dev * dev );
+      eneg += std::log( 1.0 + 0.5 * dev * dev / sigma_tmp);
       // store derivative for later
-      GMMid_der_[GMMid] = kbt_ / ( 1.0 + 0.5 * dev * dev ) * dev / sigma_[i];
+      GMMid_der_[GMMid] = kbt_ / ( 1.0 + 0.5 * dev * dev / sigma_tmp) * dev / std::sqrt(sigma_tmp);
     }
     // add to total energy along with normalizations and prior
     ene_ += kbt_ * ( eneg + (static_cast<double>(GMM_d_grps_[i].size())+prior_) * std::log(sigma_[i]) );
