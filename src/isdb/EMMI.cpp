@@ -713,7 +713,7 @@ EMMI::EMMI(const ActionOptions&ao):
   }
 
   // Optsigmamean
-  if (read_sigma_mean_ > 0.0) {
+  if (read_sigma_mean_ > 0.0 && do_optsigmamean_) {
     sigma_mean2_.resize(GMM_d_grps_.size());
     for (unsigned i = 0; i < GMM_d_grps_.size(); i++)
       sigma_mean2_[i] = read_sigma_mean_ * read_sigma_mean_;
@@ -1580,7 +1580,6 @@ void EMMI::get_weights(double &weight, double &norm, double &neff)
 
 void EMMI::get_sigma_mean(const double weight, const double norm, const double neff, const std::vector<double> &mean)
 {
-  const double dnrep    = static_cast<double>(nrep_);
   std::vector<double> sigma_mean2_tmp(sigma_mean2_.size());
 
   if(do_optsigmamean_) {
@@ -1613,9 +1612,8 @@ void EMMI::get_sigma_mean(const double weight, const double norm, const double n
       getPntrToComponent("sigmaMean-" + num)->set(std::sqrt(sigma_mean2_tmp[i]));
     }
     // endif sigma mean optimization
+    sigma_mean2_ = sigma_mean2_tmp;
   } 
-
-  sigma_mean2_ = sigma_mean2_tmp;
 }
 
 void EMMI::calculate()
@@ -1772,20 +1770,21 @@ void EMMI::calculate_Gauss()
   // cycle on all the GMM groups
   for(unsigned i=0; i<GMM_d_grps_.size(); ++i) {
     double eneg = 0.0;
+
+    const double sigma_temp = sigma_[i] + scale_ * std::sqrt(sigma_mean2_[i]);
     // cycle on all the members of the group
     for(unsigned j=0; j<GMM_d_grps_[i].size(); ++j) {
       // id of the GMM component
       int GMMid = GMM_d_grps_[i][j];
       // calculate deviation
-      double dev = ( scale_*ovmd_ave_[GMMid]-ovdd_[GMMid] );
-      const double sigma_tmp = (sigma_[i] * sigma_[i] + scale_ * sigma_mean2_[i]);
+      double dev = ( scale_*ovmd_ave_[GMMid]-ovdd_[GMMid] ) / sigma_temp;
       // add to group energy
-      eneg += 0.5 * dev * dev / sigma_tmp;
+      eneg += 0.5 * dev * dev;
       // store derivative for later
-      GMMid_der_[GMMid] = kbt_ * dev / std::sqrt(sigma_tmp);
+      GMMid_der_[GMMid] = kbt_ * dev / sigma_temp;
     }
     // add to total energy along with normalizations and prior
-    ene_ += kbt_ * ( eneg + (static_cast<double>(GMM_d_grps_[i].size())+prior_) * std::log(sigma_[i]) );
+    ene_ += kbt_ * ( eneg + (static_cast<double>(GMM_d_grps_[i].size())+prior_) * std::log(sigma_temp));
   }
 }
 
@@ -1793,18 +1792,19 @@ void EMMI::calculate_Outliers()
 {
   // cycle on all the GMM groups
   for(unsigned i=0; i<GMM_d_grps_.size(); ++i) {
+
+    const double sigma_temp = sigma_[i] + scale_ * std::sqrt(sigma_mean2_[i]);
     // cycle on all the members of the group
     double eneg = 0.0;
     for(unsigned j=0; j<GMM_d_grps_[i].size(); ++j) {
       // id of the GMM component
       int GMMid = GMM_d_grps_[i][j];
       // calculate deviation
-      double dev = ( scale_*ovmd_ave_[GMMid]-ovdd_[GMMid] );
-      const double sigma_tmp = (sigma_[i] * sigma_[i] + scale_ * sigma_mean2_[i]);
+      double dev = ( scale_*ovmd_ave_[GMMid]-ovdd_[GMMid] ) / sigma_temp;
       // add to group energy
-      eneg += std::log( 1.0 + 0.5 * dev * dev / sigma_tmp);
+      eneg += std::log( 1.0 + 0.5 * dev * dev);
       // store derivative for later
-      GMMid_der_[GMMid] = kbt_ / ( 1.0 + 0.5 * dev * dev / sigma_tmp) * dev / std::sqrt(sigma_tmp);
+      GMMid_der_[GMMid] = kbt_ / ( 1.0 + 0.5 * dev * dev) * dev / sigma_temp;
     }
     // add to total energy along with normalizations and prior
     ene_ += kbt_ * ( eneg + (static_cast<double>(GMM_d_grps_[i].size())+prior_) * std::log(sigma_[i]) );
@@ -1815,6 +1815,8 @@ void EMMI::calculate_Marginal()
 {
   // cycle on all the GMM groups
   for(unsigned i=0; i<GMM_d_grps_.size(); ++i) {
+
+    const double sigma_temp = sigma_min_[i] + scale_ * std::sqrt(sigma_mean2_[i]);
     // cycle on all the members of the group
     for(unsigned j=0; j<GMM_d_grps_[i].size(); ++j) {
       // id of the GMM component
@@ -1822,11 +1824,11 @@ void EMMI::calculate_Marginal()
       // calculate deviation
       double dev = ( scale_*ovmd_ave_[GMMid]-ovdd_[GMMid] );
       // calculate errf
-      double errf = erf ( dev * inv_sqrt2_ / sigma_min_[i] );
+      double errf = erf ( dev * inv_sqrt2_ / sigma_temp );
       // add to group energy
       ene_ += -kbt_ * std::log ( 0.5 / dev * errf ) ;
       // store derivative for later
-      GMMid_der_[GMMid] = - kbt_/errf*sqrt2_pi_*std::exp(-0.5*dev*dev/sigma_min_[i]/sigma_min_[i])/sigma_min_[i]+kbt_/dev;
+      GMMid_der_[GMMid] = - kbt_/errf*sqrt2_pi_*std::exp(-0.5*dev*dev/sigma_temp/sigma_temp)/sigma_temp+kbt_/dev;
     }
   }
 }
